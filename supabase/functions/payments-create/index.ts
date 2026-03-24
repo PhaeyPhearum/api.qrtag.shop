@@ -1,6 +1,12 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { encode as base64Encode } from "https://deno.land/std@0.208.0/encoding/base64.ts";
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+};
+
 async function generateHash(hashString: string, apiKey: string): Promise<string> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -31,9 +37,13 @@ function getBaseUrl(): string {
 }
 
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ success: false, error: "Method not allowed" }), {
-      status: 405, headers: { "Content-Type": "application/json" },
+      status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
@@ -44,7 +54,7 @@ Deno.serve(async (req) => {
     if (!merchantId || !apiKey) {
       console.error("Missing PAYWAY_MERCHANT_ID or PAYWAY_API_KEY");
       return new Response(JSON.stringify({ success: false, error: "Server configuration error" }), {
-        status: 500, headers: { "Content-Type": "application/json" },
+        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -53,7 +63,7 @@ Deno.serve(async (req) => {
 
     if (!order_id || !amount || !customer_info) {
       return new Response(JSON.stringify({ success: false, error: "Missing required fields: order_id, amount, customer_info" }), {
-        status: 400, headers: { "Content-Type": "application/json" },
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -82,7 +92,6 @@ Deno.serve(async (req) => {
 
     const hash = await generateHash(hashString, apiKey);
 
-    // Save to DB
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -103,7 +112,7 @@ Deno.serve(async (req) => {
     if (dbError) {
       console.error("DB insert error:", dbError);
       return new Response(JSON.stringify({ success: false, error: "Failed to save order" }), {
-        status: 500, headers: { "Content-Type": "application/json" },
+        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -132,12 +141,12 @@ Deno.serve(async (req) => {
       payment_url: `${baseUrl}/api/payment-gateway/v1/payments/purchase`,
       form_data: formData,
     }), {
-      status: 200, headers: { "Content-Type": "application/json" },
+      status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
     console.error("Create error:", err);
     return new Response(JSON.stringify({ success: false, error: "Internal server error" }), {
-      status: 500, headers: { "Content-Type": "application/json" },
+      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

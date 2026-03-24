@@ -1,6 +1,12 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { encode as base64Encode } from "https://deno.land/std@0.208.0/encoding/base64.ts";
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+};
+
 async function generateHash(hashString: string, apiKey: string): Promise<string> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -22,9 +28,13 @@ function getBaseUrl(): string {
 }
 
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ success: false, error: "Method not allowed" }), {
-      status: 405, headers: { "Content-Type": "application/json" },
+      status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
@@ -48,35 +58,33 @@ Deno.serve(async (req) => {
     const tranId = body.tran_id as string;
     if (!tranId) {
       return new Response(JSON.stringify({ success: false, error: "Missing tran_id" }), {
-        status: 400, headers: { "Content-Type": "application/json" },
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-    // Idempotency check
     const { data: existingOrder, error: fetchError } = await supabase
       .from("payment_orders").select("status").eq("tran_id", tranId).single();
 
     if (fetchError || !existingOrder) {
       return new Response(JSON.stringify({ success: false, error: "Order not found" }), {
-        status: 404, headers: { "Content-Type": "application/json" },
+        status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     if (existingOrder.status === "PAID" || existingOrder.status === "FAILED") {
       console.log(`Order ${tranId} already ${existingOrder.status}. Skipping.`);
       return new Response(JSON.stringify({ success: true, message: "Already processed" }), {
-        status: 200, headers: { "Content-Type": "application/json" },
+        status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Verify with ABA before marking PAID
     const merchantId = Deno.env.get("PAYWAY_MERCHANT_ID");
     const apiKey = Deno.env.get("PAYWAY_API_KEY");
     if (!merchantId || !apiKey) {
       return new Response(JSON.stringify({ success: false, error: "Server configuration error" }), {
-        status: 500, headers: { "Content-Type": "application/json" },
+        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -101,7 +109,7 @@ Deno.serve(async (req) => {
     } catch (abaErr) {
       console.error("ABA verification failed:", abaErr);
       return new Response(JSON.stringify({ success: false, error: "Verification failed" }), {
-        status: 502, headers: { "Content-Type": "application/json" },
+        status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -113,12 +121,12 @@ Deno.serve(async (req) => {
     }
 
     return new Response(JSON.stringify({ success: true }), {
-      status: 200, headers: { "Content-Type": "application/json" },
+      status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
     console.error("Webhook error:", err);
     return new Response(JSON.stringify({ success: false, error: "Internal server error" }), {
-      status: 500, headers: { "Content-Type": "application/json" },
+      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

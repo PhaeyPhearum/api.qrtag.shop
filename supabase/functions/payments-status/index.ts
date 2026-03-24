@@ -1,6 +1,12 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { encode as base64Encode } from "https://deno.land/std@0.208.0/encoding/base64.ts";
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+};
+
 async function generateHash(hashString: string, apiKey: string): Promise<string> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -22,9 +28,13 @@ function getBaseUrl(): string {
 }
 
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ success: false, error: "Method not allowed" }), {
-      status: 405, headers: { "Content-Type": "application/json" },
+      status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
@@ -33,14 +43,14 @@ Deno.serve(async (req) => {
     const apiKey = Deno.env.get("PAYWAY_API_KEY");
     if (!merchantId || !apiKey) {
       return new Response(JSON.stringify({ success: false, error: "Server configuration error" }), {
-        status: 500, headers: { "Content-Type": "application/json" },
+        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     const { tran_id } = await req.json();
     if (!tran_id) {
       return new Response(JSON.stringify({ success: false, error: "Missing tran_id" }), {
-        status: 400, headers: { "Content-Type": "application/json" },
+        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -51,7 +61,7 @@ Deno.serve(async (req) => {
 
     if (dbError || !order) {
       return new Response(JSON.stringify({ success: false, error: "Order not found" }), {
-        status: 404, headers: { "Content-Type": "application/json" },
+        status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -61,7 +71,7 @@ Deno.serve(async (req) => {
         status: order.status === "PAID" ? "APPROVED" : "FAILED",
         tran_id, order_id: order.order_id,
         external_order_id: order.external_order_id || null,
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     const baseUrl = getBaseUrl();
@@ -91,17 +101,17 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({
         success: true, status: resolvedStatus, tran_id,
         order_id: order.order_id, external_order_id: order.external_order_id || null,
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     } catch (abaErr) {
       console.error("ABA poll failed:", abaErr);
       return new Response(JSON.stringify({
         success: true, status: "PENDING", tran_id, order_id: order.order_id,
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
   } catch (err) {
     console.error("Status error:", err);
     return new Response(JSON.stringify({ success: false, error: "Internal server error" }), {
-      status: 500, headers: { "Content-Type": "application/json" },
+      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });
