@@ -38,12 +38,13 @@ function getBaseUrl(): string {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+    return new Response(null, { status: 200, headers: corsHeaders });
   }
 
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ success: false, error: "Method not allowed" }), {
-      status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
@@ -54,7 +55,8 @@ Deno.serve(async (req) => {
     if (!merchantId || !apiKey) {
       console.error("Missing PAYWAY_MERCHANT_ID or PAYWAY_API_KEY");
       return new Response(JSON.stringify({ success: false, error: "Server configuration error" }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -63,7 +65,8 @@ Deno.serve(async (req) => {
 
     if (!order_id || !amount || !customer_info) {
       return new Response(JSON.stringify({ success: false, error: "Missing required fields: order_id, amount, customer_info" }), {
-        status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -112,7 +115,8 @@ Deno.serve(async (req) => {
     if (dbError) {
       console.error("DB insert error:", dbError);
       return new Response(JSON.stringify({ success: false, error: "Failed to save order" }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -141,12 +145,14 @@ Deno.serve(async (req) => {
       payment_url: `${baseUrl}/api/payment-gateway/v1/payments/purchase`,
       form_data: formData,
     }), {
-      status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
     console.error("Create error:", err);
-    return new Response(JSON.stringify({ success: false, error: "Internal server error" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    return new Response(JSON.stringify({ success: false, error: err.message || "Internal server error" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });
