@@ -1,5 +1,4 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { encode as base64Encode } from "https://deno.land/std@0.208.0/encoding/base64.ts";
 
 // CORS
 const corsHeaders = {
@@ -9,22 +8,55 @@ const corsHeaders = {
   "Content-Type": "application/json",
 };
 
+// CLEAN VALUE
+function clean(v: any): string {
+  return v === undefined || v === null ? "" : String(v).trim();
+}
+
+function summarizeRequestBody(body: Record<string, unknown>) {
+  return {
+    keys: Object.keys(body),
+    has_customer_info: Boolean(body.customer_info),
+    customer_info_type: typeof body.customer_info,
+    top_level_customer_fields: {
+      firstname: body.firstname !== undefined,
+      lastname: body.lastname !== undefined,
+      email: body.email !== undefined,
+      phone: body.phone !== undefined,
+    },
+    preview: {
+      order_id: body.order_id ?? null,
+      amount: body.amount ?? null,
+      currency: body.currency ?? null,
+      external_order_id: body.external_order_id ?? null,
+    },
+  };
+}
+
+// IDs
 function generateTranId(): string {
-  const now = Date.now();
-  const random = Math.random().toString(36).substring(2, 8).toUpperCase();
-  return `QRT${now}${random}`;
+  return `${Math.floor(Date.now() / 1000)}${Math.floor(Math.random() * 1000)}`;
 }
 
 function getReqTime(): string {
-  const now = new Date();
-  const pad = (n: number) => n.toString().padStart(2, "0");
-  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return String(Math.floor(Date.now() / 1000));
 }
 
 function getBaseUrl(): string {
   return Deno.env.get("PAYWAY_BASE_URL") || "https://checkout-sandbox.payway.com.kh";
 }
 
+// BASE64
+function bufferToBase64(buffer: ArrayBuffer): string {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+// HASH
 async function generateHash(hashString: string, apiKey: string): Promise<string> {
   const encoder = new TextEncoder();
 
@@ -36,127 +68,135 @@ async function generateHash(hashString: string, apiKey: string): Promise<string>
     ["sign"]
   );
 
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(hashString));
-  return base64Encode(new Uint8Array(signature));
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(hashString)
+  );
+
+  return bufferToBase64(signature);
 }
 
-// MAIN HANDLER
+// MAIN
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: corsHeaders,
-    });
+    return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
   }
 
   try {
-    if (req.method !== "POST") {
-      return new Response(
-        JSON.stringify({ success: false, error: "Method not allowed" }),
-        { status: 405, headers: corsHeaders }
-      );
-    }
+    console.log("STEP 1: request");
 
     const merchantId = Deno.env.get("PAYWAY_MERCHANT_ID");
     const apiKey = Deno.env.get("PAYWAY_API_KEY");
 
     if (!merchantId || !apiKey) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Missing env config" }),
-        { status: 500, headers: corsHeaders }
-      );
+      throw new Error("Missing env config");
     }
 
     const body = await req.json();
+    console.log("STEP 2: body", body);
+    console.log("STEP 2A: body summary", summarizeRequestBody(body));
 
     const {
       order_id,
       amount,
-      currency = "USD",
       customer_info,
       external_order_id,
+      firstname: topLevelFirstname,
+      lastname: topLevelLastname,
+      email: topLevelEmail,
+      phone: topLevelPhone,
     } = body;
 
     if (!order_id || !amount) {
-      return new Response(
-        JSON.stringify({ success: false, error: "Missing required fields" }),
-        { status: 400, headers: corsHeaders }
-      );
+      throw new Error("Missing required fields");
     }
 
-    const customer = customer_info || {};
+    // Accept both:
+    // 1. { customer_info: { firstname, lastname, email, phone } }
+    // 2. { firstname, lastname, email, phone }
+    const customer =
+      customer_info && typeof customer_info === "object"
+        ? customer_info
+        : {};
 
-    const firstname = (customer.firstname || "").trim();
-    const lastname = (customer.lastname || "").trim();
-    const email = (customer.email || "").trim();
-    const phone = (customer.phone || "").trim();
+    const firstname = clean(customer.firstname ?? topLevelFirstname);
+    const lastname = clean(customer.lastname ?? topLevelLastname);
+    const email = clean(customer.email ?? topLevelEmail);
+    const phone = clean(customer.phone ?? topLevelPhone);
 
-    // 🔥 CRITICAL: normalize ONCE and reuse everywhere
+    console.log("CUSTOMER_INFO_SOURCE:", {
+      has_customer_info: Boolean(customer_info),
+      customer_info_type: typeof customer_info,
+      top_level_fields_present: {
+        firstname: topLevelFirstname !== undefined,
+        lastname: topLevelLastname !== undefined,
+        email: topLevelEmail !== undefined,
+        phone: topLevelPhone !== undefined,
+      },
+    });
+    console.log("CUSTOMER_INFO_RECEIVED:", customer);
+    console.log("CUSTOMER_FIELDS_RESOLVED:", {
+      firstname,
+      lastname,
+      email,
+      phone,
+    });
+
+    if (!firstname && !lastname && !email && !phone) {
+      console.warn("CUSTOMER_FIELDS_MISSING:", {
+        message: "No customer fields were provided by the caller",
+        expected_shapes: [
+          "{ customer_info: { firstname, lastname, email, phone } }",
+          "{ firstname, lastname, email, phone }",
+        ],
+        body_summary: summarizeRequestBody(body),
+      });
+    }
+
     const normalizedAmount = Number(amount).toFixed(2);
-
     const reqTime = getReqTime();
     const tranId = generateTranId();
-    const returnParams = order_id;
+    const returnParams = clean(order_id);
 
-    const returnUrl = "https://www.qrtag.shop/payment/result";
+    // ✅ ALWAYS include all fields (even empty)
+    const hashParts = [
+      reqTime,
+      merchantId,
+      tranId,
+      normalizedAmount,
+      firstname,
+      lastname,
+      email,
+      phone,
+      returnParams,
+    ];
 
-    const hashString = `${reqTime}${merchantId}${tranId}${normalizedAmount}${firstname}${lastname}${email}${phone}${returnParams}`;
+    const hashString = hashParts.join("");
+
+    console.log("HASH_PARTS:", hashParts);
+    console.log("FINAL_HASH_STRING:", hashString);
+
     const hash = await generateHash(hashString, apiKey);
+    console.log("STEP 3: hash", hash);
 
-    // =========================
-    // 🔥 DEBUG LOGS (IMPORTANT)
-    // =========================
-    console.log("=== PAYWAY DEBUG START ===");
-
-    console.log("tran_id:", tranId);
-    console.log("order_id:", order_id);
-
-    console.log("amount (raw):", amount);
-    console.log("amount (normalized):", normalizedAmount);
-
-    console.log("req_time:", reqTime);
-
-    console.log("firstname:", firstname);
-    console.log("lastname:", lastname);
-    console.log("email:", email);
-    console.log("phone:", phone);
-
-    console.log("return_url:", returnUrl);
-    console.log("continue_success_url:", returnUrl);
-
-    console.log("hash_string:", hashString);
-    console.log("hash:", hash);
-
-    console.log("=== PAYWAY DEBUG END ===");
-    // =========================
-
-    // SAVE ORDER
+    // ⚠️ keep DB disabled until payment works
+    /*
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    const { error: dbError } = await supabase.from("payment_orders").insert({
+    await supabase.from("payment_orders").insert({
       order_id,
       tran_id: tranId,
       amount: normalizedAmount,
-      currency,
       status: "PENDING",
-      customer_firstname: firstname,
-      customer_lastname: lastname,
-      customer_email: email,
-      customer_phone: phone,
-      external_order_id: external_order_id || null,
     });
-
-    if (dbError) {
-      return new Response(
-        JSON.stringify({ success: false, error: "DB insert failed" }),
-        { status: 500, headers: corsHeaders }
-      );
-    }
+    */
 
     const baseUrl = getBaseUrl();
+    const returnUrl = "https://www.qrtag.shop/payment/result";
 
     const formData = {
       req_time: reqTime,
@@ -170,39 +210,32 @@ Deno.serve(async (req) => {
       return_params: returnParams,
       hash,
       payment_option: "abapay_deeplink",
-      currency,
+      currency: "USD",
       continue_success_url: returnUrl,
       return_url: returnUrl,
     };
 
-    // 🔥 FINAL DEBUG
-    console.log("form_data:", formData);
+    console.log("STEP 4: response ready");
 
     return new Response(
       JSON.stringify({
         success: true,
-        test_flag: "NEW_BACKEND_V2",
         tran_id: tranId,
         payment_url: `${baseUrl}/api/payment-gateway/v1/payments/purchase`,
         form_data: formData,
       }),
-      {
-        status: 200,
-        headers: corsHeaders,
-      }
+      { headers: corsHeaders }
     );
+
   } catch (err) {
-    console.error("❌ ERROR:", err);
+    console.error("ERROR:", err);
 
     return new Response(
       JSON.stringify({
         success: false,
-        error: err?.message || "Internal error",
+        error: err.message,
       }),
-      {
-        status: 500,
-        headers: corsHeaders,
-      }
+      { status: 500, headers: corsHeaders }
     );
   }
 });

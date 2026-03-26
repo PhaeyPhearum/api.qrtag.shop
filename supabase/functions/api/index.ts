@@ -38,6 +38,26 @@ const ROUTE_MAP: Record<string, string> = {
   "payments/status": "payments-status",
 };
 
+function summarizePayload(payload: Record<string, unknown>) {
+  return {
+    keys: Object.keys(payload),
+    has_customer_info: Boolean(payload.customer_info),
+    customer_info_type: typeof payload.customer_info,
+    top_level_customer_fields: {
+      firstname: payload.firstname !== undefined,
+      lastname: payload.lastname !== undefined,
+      email: payload.email !== undefined,
+      phone: payload.phone !== undefined,
+    },
+    preview: {
+      order_id: payload.order_id ?? null,
+      amount: payload.amount ?? null,
+      currency: payload.currency ?? null,
+      external_order_id: payload.external_order_id ?? null,
+    },
+  };
+}
+
 Deno.serve(async (req) => {
   const corsHeaders = getCorsHeaders(req);
 
@@ -71,6 +91,12 @@ Deno.serve(async (req) => {
       payload = rest;
     }
 
+    console.log("[Gateway] Incoming request summary:", {
+      route,
+      pathname: url.pathname,
+      summary: summarizePayload(payload),
+    });
+
     if (!route || !ROUTE_MAP[route]) {
       return new Response(JSON.stringify({
         success: false,
@@ -86,6 +112,7 @@ Deno.serve(async (req) => {
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
     console.log(`[Gateway] Routing ${route} → ${functionName}`);
+    console.log("[Gateway] Forwarding payload summary:", summarizePayload(payload));
 
     // Call the internal edge function
     const internalResponse = await fetch(`${supabaseUrl}/functions/v1/${functionName}`, {
