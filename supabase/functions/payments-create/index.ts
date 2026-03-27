@@ -1,6 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-// CORS
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "*",
@@ -8,55 +7,30 @@ const corsHeaders = {
   "Content-Type": "application/json",
 };
 
-// CLEAN VALUE
-function clean(v: any): string {
-  return v === undefined || v === null ? "" : String(v).trim();
-}
+// ---------- Helpers ----------
 
-function summarizeRequestBody(body: Record<string, unknown>) {
-  return {
-    keys: Object.keys(body),
-    has_customer_info: Boolean(body.customer_info),
-    customer_info_type: typeof body.customer_info,
-    top_level_customer_fields: {
-      firstname: body.firstname !== undefined,
-      lastname: body.lastname !== undefined,
-      email: body.email !== undefined,
-      phone: body.phone !== undefined,
-    },
-    preview: {
-      order_id: body.order_id ?? null,
-      amount: body.amount ?? null,
-      currency: body.currency ?? null,
-      external_order_id: body.external_order_id ?? null,
-    },
-  };
-}
-
-// IDs
 function generateTranId(): string {
-  return `${Math.floor(Date.now() / 1000)}${Math.floor(Math.random() * 1000)}`;
+  const timestamp = Math.floor(Date.now() / 1000);
+  const random = Math.floor(Math.random() * 1000); // 0–999
+  return `${timestamp}${random}`;
 }
 
 function getReqTime(): string {
   return String(Math.floor(Date.now() / 1000));
 }
 
-function getBaseUrl(): string {
-  return Deno.env.get("PAYWAY_BASE_URL") || "https://checkout-sandbox.payway.com.kh";
-}
-
-// BASE64
-function bufferToBase64(buffer: ArrayBuffer): string {
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+function normalizeAmount(amount: unknown): string {
+  const parsed = Number(amount);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error("Amount must be a positive number");
   }
-  return btoa(binary);
+  return parsed.toFixed(2); // ✅ critical for hash consistency
 }
 
-// HASH
+function clean(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
 async function generateHash(hashString: string, apiKey: string): Promise<string> {
   const encoder = new TextEncoder();
 
@@ -74,166 +48,131 @@ async function generateHash(hashString: string, apiKey: string): Promise<string>
     encoder.encode(hashString)
   );
 
-  return bufferToBase64(signature);
+  return btoa(String.fromCharCode(...new Uint8Array(signature)));
 }
 
-// MAIN
+// ---------- Main ----------
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response(JSON.stringify({ ok: true }), { headers: corsHeaders });
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    console.log("STEP 1: request");
+    if (req.method !== "POST") {
+      return new Response(
+        JSON.stringify({ success: false, error: "Method not allowed" }),
+        { status: 405, headers: corsHeaders }
+      );
+    }
 
+    // ---------- ENV ----------
     const merchantId = Deno.env.get("PAYWAY_MERCHANT_ID");
     const apiKey = Deno.env.get("PAYWAY_API_KEY");
+    const returnUrl = Deno.env.get("PAYWAY_RETURN_URL");
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
     if (!merchantId || !apiKey) {
-      throw new Error("Missing env config");
+      throw new Error("Missing PAYWAY config");
     }
 
+    // ---------- INPUT ----------
     const body = await req.json();
-    console.log("STEP 2: body", body);
-    console.log("STEP 2A: body summary", summarizeRequestBody(body));
+    console.log("STEP 1 BODY:", JSON.stringify(body));
 
-    const {
-      order_id,
-      amount,
-      customer_info,
-      external_order_id,
-      firstname: topLevelFirstname,
-      lastname: topLevelLastname,
-      email: topLevelEmail,
-      phone: topLevelPhone,
-    } = body;
+    const orderId = clean(body.order_id);
+    const amount = normalizeAmount(body.amount);
 
-    if (!order_id || !amount) {
-      throw new Error("Missing required fields");
+    if (!orderId) {
+      throw new Error("Missing order_id");
     }
 
-    // Accept both:
-    // 1. { customer_info: { firstname, lastname, email, phone } }
-    // 2. { firstname, lastname, email, phone }
-    const customer =
-      customer_info && typeof customer_info === "object"
-        ? customer_info
-        : {};
+    // ---------- CORE DATA ----------
+    const reqTime = getReqTime();
+    const tranId = generateTranId();
 
-    const firstname = clean(customer.firstname ?? topLevelFirstname);
-    const lastname = clean(customer.lastname ?? topLevelLastname);
-    const email = clean(customer.email ?? topLevelEmail);
-    const phone = clean(customer.phone ?? topLevelPhone);
+    const firstname = "Guest";
+    const lastname = "User";
+    const email = "test@example.com";
+    const phone = "85500000000";
 
-    console.log("CUSTOMER_INFO_SOURCE:", {
-      has_customer_info: Boolean(customer_info),
-      customer_info_type: typeof customer_info,
-      top_level_fields_present: {
-        firstname: topLevelFirstname !== undefined,
-        lastname: topLevelLastname !== undefined,
-        email: topLevelEmail !== undefined,
-        phone: topLevelPhone !== undefined,
-      },
-    });
-    console.log("CUSTOMER_INFO_RECEIVED:", customer);
-    console.log("CUSTOMER_FIELDS_RESOLVED:", {
-      firstname,
-      lastname,
-      email,
-      phone,
-    });
+    const returnParams = orderId;
 
-    if (!firstname && !lastname && !email && !phone) {
-      console.warn("CUSTOMER_FIELDS_MISSING:", {
-        message: "No customer fields were provided by the caller",
-        expected_shapes: [
-          "{ customer_info: { firstname, lastname, email, phone } }",
-          "{ firstname, lastname, email, phone }",
-        ],
-        body_summary: summarizeRequestBody(body),
+    // ---------- HASH ----------
+    const hashString =
+      reqTime +
+      merchantId +
+      tranId +
+      amount +
+      firstname +
+      lastname +
+      email +
+      phone +
+      returnParams;
+
+    console.log("HASH_STRING:", hashString);
+
+    const hash = await generateHash(hashString, apiKey);
+
+    console.log("HASH:", hash);
+
+    // ---------- DB INSERT (SOURCE OF TRUTH) ----------
+    if (supabaseUrl && serviceRoleKey) {
+      const supabase = createClient(supabaseUrl, serviceRoleKey);
+
+      await supabase.from("payments").insert({
+        order_id: orderId,
+        tran_id: tranId,
+        amount: Number(amount),
+        currency: "USD",
+        status: "PENDING",
+        customer_name: `${firstname} ${lastname}`,
+        customer_email: email,
+        customer_phone: phone,
       });
     }
 
-    const normalizedAmount = Number(amount).toFixed(2);
-    const reqTime = getReqTime();
-    const tranId = generateTranId();
-    const returnParams = clean(order_id);
-
-    // ✅ ALWAYS include all fields (even empty)
-    const hashParts = [
-      reqTime,
-      merchantId,
-      tranId,
-      normalizedAmount,
-      firstname,
-      lastname,
-      email,
-      phone,
-      returnParams,
-    ];
-
-    const hashString = hashParts.join("");
-
-    console.log("HASH_PARTS:", hashParts);
-    console.log("FINAL_HASH_STRING:", hashString);
-
-    const hash = await generateHash(hashString, apiKey);
-    console.log("STEP 3: hash", hash);
-
-    // ⚠️ keep DB disabled until payment works
-    /*
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
-
-    await supabase.from("payment_orders").insert({
-      order_id,
-      tran_id: tranId,
-      amount: normalizedAmount,
-      status: "PENDING",
-    });
-    */
-
-    const baseUrl = getBaseUrl();
-    const returnUrl = "https://www.qrtag.shop/payment/result";
-
-    const formData = {
+    // ---------- PAYLOAD ----------
+    const formData: Record<string, string> = {
       req_time: reqTime,
       merchant_id: merchantId,
       tran_id: tranId,
-      amount: normalizedAmount,
+      amount,
       firstname,
       lastname,
       email,
       phone,
       return_params: returnParams,
       hash,
-      payment_option: "abapay_deeplink",
-      currency: "USD",
-      continue_success_url: returnUrl,
-      return_url: returnUrl,
     };
 
-    console.log("STEP 4: response ready");
+    // ✅ IMPORTANT: add AFTER hash (DO NOT include in hash)
+    // if (returnUrl) {
+    //   formData.return_url = returnUrl;
+    // }
 
+    console.log("FINAL_PAYLOAD:", JSON.stringify(formData));
+
+    // ---------- RESPONSE ----------
     return new Response(
       JSON.stringify({
         success: true,
-        tran_id: tranId,
-        payment_url: `${baseUrl}/api/payment-gateway/v1/payments/purchase`,
+        payment_url:
+          "https://checkout-sandbox.payway.com.kh/api/payment-gateway/v1/payments/purchase",
         form_data: formData,
+        tran_id: tranId,
       }),
-      { headers: corsHeaders }
+      { status: 200, headers: corsHeaders }
     );
-
   } catch (err) {
     console.error("ERROR:", err);
 
     return new Response(
       JSON.stringify({
         success: false,
-        error: err.message,
+        error: err instanceof Error ? err.message : "Unknown error",
       }),
       { status: 500, headers: corsHeaders }
     );
